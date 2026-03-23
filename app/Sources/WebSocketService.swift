@@ -1,0 +1,152 @@
+import Foundation
+import Combine
+
+class WebSocketService: ObservableObject {
+    @Published var isConnected = false
+
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var reconnectDelay: TimeInterval = 1.0
+    private let maxReconnectDelay: TimeInterval = 30.0
+    private var pingTimer: Timer?
+    private var currentURL: URL?
+
+    var onPREvent: ((String, PullRequest) -> Void)?
+
+    func connect(url: URL) {
+        disconnect()
+        currentURL = url
+        reconnectDelay = 1.0
+
+        let session = URLSession(configuration: .default)
+        webSocketTask = session.webSocketTask(with: url)
+        webSocketTask?.resume()
+
+        DispatchQueue.main.async {
+            self.isConnected = true
+        }
+
+        receiveMessage()
+        startPingTimer()
+    }
+
+    func disconnect() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        DispatchQueue.main.async {
+            self.isConnected = false
+        }
+    }
+
+    private func receiveMessage() {
+        webSocketTask?.receive { [weak self] result in
+            guard let self = self else { return }
+
+            switch result {
+            case .success(let message):
+                switch message {
+                case .string(let text):
+                    self.decodeMessage(text)
+                case .data(let data):
+                    if let text = String(data: data, encoding: .utf8) {
+                        self.decodeMessage(text)
+                    }
+                @unknown default:
+                    break
+                }
+                self.receiveMessage()
+
+            case .failure:
+                DispatchQueue.main.async {
+                    self.isConnected = false
+                }
+                self.scheduleReconnect()
+            }
+        }
+    }
+
+    private func decodeMessage(_ text: String) {
+        guard let data = text.data(using: .utf8) else { return }
+
+        // Relay envelope shape: { action, pr: { number, title, html_url, created_at, updated_at, user_login, avatar_url, body }, repo: { full_name } }
+        struct WSMessage: Codable {
+            let action: String
+            let pr: PRData
+            let repo: RepoData
+
+            struct PRData: Codable {
+                let number: Int
+                let title: String
+                let html_url: String
+                let created_at: String?
+                let updated_at: String?
+                let user_login: String?
+                let avatar_url: String?
+                let body: String?
+            }
+            struct RepoData: Codable {
+                let full_name: String?
+            }
+        }
+
+        guard let message = try? JSONDecoder().decode(WSMessage.self, from: data) else { return }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+
+        func parseDate(_ str: String?) -> Date {
+            guard let str else { return Date() }
+            return formatter.date(from: str) ?? fallback.date(from: str) ?? Date()
+        }
+
+        let pr = PullRequest(
+            number: message.pr.number,
+            title: message.pr.title,
+            repo: message.repo.full_name ?? "",
+            author: message.pr.user_login ?? "",
+            avatarURL: message.pr.avatar_url ?? "",
+            body: message.pr.body ?? "",
+            htmlURL: message.pr.html_url,
+            createdAt: parseDate(message.pr.created_at),
+            updatedAt: parseDate(message.pr.updated_at),
+            isDraft: false,
+            state: "open"
+        )
+
+        DispatchQueue.main.async {
+            self.onPREvent?(message.action, pr)
+        }
+    }
+
+    private func scheduleReconnect() {
+        guard let url = currentURL else { return }
+        let delay = reconnectDelay
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self else { return }
+            self.connect(url: url)
+        }
+
+        reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
+    }
+
+    private func startPingTimer() {
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [weak self] _ in
+            self?.sendPing()
+        }
+    }
+
+    private func sendPing() {
+        webSocketTask?.sendPing { error in
+            if error != nil {
+                DispatchQueue.main.async {
+                    self.isConnected = false
+                }
+            }
+        }
+    }
+}

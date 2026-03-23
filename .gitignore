@@ -1,0 +1,16 @@
+# Swift
+app/.build/
+app/build/
+app/.swiftpm/
+
+# Cloudflare
+relay/node_modules/
+relay/.wrangler/
+
+# macOS
+.DS_Store
+*.xcodeproj
+*.xcworkspace
+
+# Generated
+/tmp/

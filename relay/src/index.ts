@@ -44,13 +44,15 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 // --- Relevant PR actions ---
 
-const RELEVANT_ACTIONS = new Set([
+const RELEVANT_PR_ACTIONS = new Set([
   "opened",
   "closed",
   "synchronize",
   "reopened",
   "ready_for_review",
 ]);
+
+const RELEVANT_REVIEW_ACTIONS = new Set(["submitted"]);
 
 // --- Worker fetch handler ---
 
@@ -90,36 +92,68 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
     return new Response("Invalid JSON", { status: 400 });
   }
 
+  const eventType = request.headers.get("X-GitHub-Event") ?? "";
   const action = payload.action as string | undefined;
-  if (!action || !RELEVANT_ACTIONS.has(action)) {
-    return new Response("Ignored action", { status: 200 });
+
+  let envelope: Record<string, unknown>;
+
+  if (eventType === "pull_request_review") {
+    if (!action || !RELEVANT_REVIEW_ACTIONS.has(action)) {
+      return new Response("Ignored action", { status: 200 });
+    }
+    const review = payload.review as Record<string, unknown> | undefined;
+    const pr = payload.pull_request as Record<string, unknown> | undefined;
+    const repo = payload.repository as Record<string, unknown> | undefined;
+    if (!review || !pr) {
+      return new Response("Not a review event", { status: 200 });
+    }
+    envelope = {
+      type: "review_event",
+      action,
+      review: {
+        state: review.state,
+        user_login: (review.user as Record<string, unknown>)?.login ?? null,
+        avatar_url: (review.user as Record<string, unknown>)?.avatar_url ?? null,
+      },
+      pr: {
+        number: pr.number,
+        title: pr.title,
+        html_url: pr.html_url,
+      },
+      repo: {
+        full_name: repo?.full_name ?? null,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  } else {
+    // pull_request event
+    if (!action || !RELEVANT_PR_ACTIONS.has(action)) {
+      return new Response("Ignored action", { status: 200 });
+    }
+    const pr = payload.pull_request as Record<string, unknown> | undefined;
+    if (!pr) {
+      return new Response("Not a PR event", { status: 200 });
+    }
+    const repo = payload.repository as Record<string, unknown> | undefined;
+    envelope = {
+      type: "pr_event",
+      action,
+      pr: {
+        number: pr.number,
+        title: pr.title,
+        html_url: pr.html_url,
+        created_at: pr.created_at,
+        updated_at: pr.updated_at,
+        avatar_url: (pr.user as Record<string, unknown>)?.avatar_url ?? null,
+        body: pr.body ?? "",
+        user_login: (pr.user as Record<string, unknown>)?.login ?? null,
+      },
+      repo: {
+        full_name: repo?.full_name ?? null,
+      },
+      timestamp: new Date().toISOString(),
+    };
   }
-
-  const pr = payload.pull_request as Record<string, unknown> | undefined;
-  if (!pr) {
-    return new Response("Not a PR event", { status: 200 });
-  }
-
-  const repo = payload.repository as Record<string, unknown> | undefined;
-
-  const envelope = {
-    type: "pr_event",
-    action,
-    pr: {
-      number: pr.number,
-      title: pr.title,
-      html_url: pr.html_url,
-      created_at: pr.created_at,
-      updated_at: pr.updated_at,
-      avatar_url: (pr.user as Record<string, unknown>)?.avatar_url ?? null,
-      body: pr.body ?? "",
-      user_login: (pr.user as Record<string, unknown>)?.login ?? null,
-    },
-    repo: {
-      full_name: repo?.full_name ?? null,
-    },
-    timestamp: new Date().toISOString(),
-  };
 
   // Forward to the singleton Durable Object
   const id = env.WEBSOCKET_ROOM.idFromName("default");

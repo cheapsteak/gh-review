@@ -24,6 +24,12 @@ struct PRListView: View {
                         .tag(pr)
                 }
                 .listStyle(.sidebar)
+                .onChange(of: appState.selectedPR) { _, newPR in
+                    guard let pr = newPR, pr.isNew,
+                          let idx = appState.pullRequests.firstIndex(where: { $0.id == pr.id }) else { return }
+                    appState.pullRequests[idx].isNew = false
+                    appState.selectedPR = appState.pullRequests[idx]
+                }
             }
         }
         .overlay(alignment: .bottom) {

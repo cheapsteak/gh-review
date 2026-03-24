@@ -3,19 +3,46 @@ import AppKit
 import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    weak var appState: AppState?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         NSApp.applicationIconImage = createAppIcon()
 
-        // Request notification permission (works when running as .app bundle)
+        // Request notification permission and register approve action
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+
+        let approveAction = UNNotificationAction(identifier: "APPROVE_PR", title: "Approve", options: [.authenticationRequired])
+        let prCategory = UNNotificationCategory(identifier: "NEW_PR", actions: [approveAction], intentIdentifiers: [])
+        center.setNotificationCategories([prCategory])
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        if let repo = userInfo["repo"] as? String, let number = userInfo["number"] as? Int {
+            if response.actionIdentifier == "APPROVE_PR" {
+                // Approve silently without changing app state
+                Task { @MainActor in
+                    await appState?.approvePR(repo: repo, number: number)
+                }
+            } else {
+                // Clicked the notification body — select PR and focus app
+                Task { @MainActor in
+                    if let pr = appState?.pullRequests.first(where: { $0.repo == repo && $0.number == number }) {
+                        appState?.selectedPR = pr
+                    }
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+        }
+        completionHandler()
     }
 
     private func createAppIcon() -> NSImage {
@@ -94,6 +121,7 @@ struct GHReviewApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
+                .onAppear { appDelegate.appState = appState }
                 .frame(minWidth: 800, minHeight: 500)
         }
         .windowStyle(.titleBar)
@@ -119,6 +147,7 @@ class AppState: ObservableObject {
     var approvedPRs: Set<String> = []  // "repo#number" keys
     @Published var prApprovals: [String: [PRApproval]] = [:]  // "repo#number" -> approvals
     var currentUsername: String?
+    @Published var mergeStatus: [String: GitHubAPI.MergeStatus] = [:]  // "repo#number" -> status
     @Published var needsReviewOnly = false
     @Published var hideDrafts = true
     @Published var hideClosed = true
@@ -127,6 +156,7 @@ class AppState: ObservableObject {
 
     func markApproved(_ pr: PullRequest) {
         approvedPRs.insert(prKey(pr))
+        dismissNotification(repo: pr.repo, number: pr.number)
     }
 
     func isApproved(_ pr: PullRequest) -> Bool {
@@ -139,6 +169,30 @@ class AppState: ObservableObject {
 
     func setApprovals(_ approvals: [PRApproval], for pr: PullRequest) {
         prApprovals[prKey(pr)] = approvals
+    }
+
+    func approvePR(repo: String, number: Int) async {
+        guard !pat.isEmpty else { return }
+        let api = GitHubAPI(pat: pat)
+        do {
+            try await api.approvePR(repo: repo, number: number)
+            let user = try await api.fetchCurrentUser()
+            let key = "\(repo)#\(number)"
+            approvedPRs.insert(key)
+            var current = prApprovals[key] ?? []
+            if !current.contains(where: { $0.author == user }) {
+                current.append(PRApproval(author: user, avatarURL: ""))
+                prApprovals[key] = current
+            }
+            dismissNotification(repo: repo, number: number)
+        } catch {}
+    }
+
+    func dismissNotification(repo: String, number: Int) {
+        let id = "pr-\(repo)-\(number)"
+        let center = UNUserNotificationCenter.current()
+        center.removeDeliveredNotifications(withIdentifiers: [id])
+        center.removePendingNotificationRequests(withIdentifiers: [id])
     }
 
     func hasHumanApproval(_ pr: PullRequest) -> Bool {
@@ -202,6 +256,11 @@ class AppState: ObservableObject {
                 self?.handlePREvent(action: action, pr: pr)
             }
         }
+        webSocketService.onReviewEvent = { [weak self] repo, number, state, login, avatarURL in
+            Task { @MainActor in
+                self?.handleReviewEvent(repo: repo, number: number, state: state, login: login, avatarURL: avatarURL)
+            }
+        }
     }
 
     func connectWebSocket() {
@@ -256,13 +315,61 @@ class AppState: ObservableObject {
         }
     }
 
-    func testNotification() {
-        Self.notify(title: "GHReview", subtitle: "Notifications are working", body: "This is a test notification")
+    private func handleReviewEvent(repo: String, number: Int, state: String, login: String, avatarURL: String?) {
+        let key = "\(repo)#\(number)"
+        if state == "approved" {
+            var current = prApprovals[key] ?? []
+            if !current.contains(where: { $0.author == login }) {
+                current.append(PRApproval(author: login, avatarURL: avatarURL ?? ""))
+                prApprovals[key] = current
+            }
+            // Refresh merge status since approval may unblock merge
+            Task {
+                await refreshMergeStatus(repo: repo, number: number)
+            }
+        }
+    }
+
+    func refreshMergeStatus(repo: String, number: Int) async {
+        guard let api = gitHubAPI else { return }
+        let key = "\(repo)#\(number)"
+        do {
+            let status = try await api.fetchMergeStatus(repo: repo, number: number)
+            mergeStatus[key] = status
+        } catch {}
+    }
+
+    @Published var mergeQueued: Set<String> = []  // "repo#number" keys for PRs in merge queue
+
+    func mergePR(repo: String, number: Int) async {
+        guard let api = gitHubAPI else { return }
+        do {
+            try await api.mergePR(repo: repo, number: number)
+            let key = "\(repo)#\(number)"
+            mergeQueued.insert(key)
+        } catch {}
     }
 
     private func sendNotification(pr: PullRequest) {
-        Self.notify(title: "New PR", subtitle: pr.title, body: "\(pr.author) opened #\(pr.number) in \(pr.repo)")
+        let content = UNMutableNotificationContent()
+        content.title = "New PR"
+        content.subtitle = pr.title
+        content.body = "\(pr.author) opened #\(pr.number) in \(pr.repo)"
+        content.sound = .default
+        content.categoryIdentifier = "NEW_PR"
+        content.userInfo = ["repo": pr.repo, "number": pr.number]
+        let notificationID = "pr-\(pr.repo)-\(pr.number)"
+        let request = UNNotificationRequest(identifier: notificationID, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            if error != nil {
+                Self.osascriptNotify(title: "New PR", subtitle: pr.title, body: "\(pr.author) opened #\(pr.number) in \(pr.repo)")
+            }
+        }
         NSApp.requestUserAttention(.informationalRequest)
+    }
+
+    func testNotification() {
+        Self.notify(title: "GHReview", subtitle: "Notifications are working", body: "This is a test notification")
     }
 
     static func notify(title: String, subtitle: String, body: String) {
@@ -274,16 +381,19 @@ class AppState: ObservableObject {
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
             if error != nil {
-                // Fallback to osascript
-                let t = title.replacingOccurrences(of: "\"", with: "\\\"")
-                let s = subtitle.replacingOccurrences(of: "\"", with: "\\\"")
-                let b = body.replacingOccurrences(of: "\"", with: "\\\"")
-                let script = "display notification \"\(b)\" with title \"\(t)\" subtitle \"\(s)\" sound name \"default\""
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                process.arguments = ["-e", script]
-                try? process.run()
+                osascriptNotify(title: title, subtitle: subtitle, body: body)
             }
         }
+    }
+
+    private static func osascriptNotify(title: String, subtitle: String, body: String) {
+        let t = title.replacingOccurrences(of: "\"", with: "\\\"")
+        let s = subtitle.replacingOccurrences(of: "\"", with: "\\\"")
+        let b = body.replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "display notification \"\(b)\" with title \"\(t)\" subtitle \"\(s)\" sound name \"default\""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        try? process.run()
     }
 }

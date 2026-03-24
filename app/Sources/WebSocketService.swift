@@ -11,6 +11,7 @@ class WebSocketService: ObservableObject {
     private var currentURL: URL?
 
     var onPREvent: ((String, PullRequest) -> Void)?
+    var onReviewEvent: ((String, Int, String, String, String?) -> Void)?  // (repo, number, state, login, avatarURL)
 
     func connect(url: URL) {
         disconnect()
@@ -69,7 +70,40 @@ class WebSocketService: ObservableObject {
     private func decodeMessage(_ text: String) {
         guard let data = text.data(using: .utf8) else { return }
 
-        // Relay envelope shape: { action, pr: { number, title, html_url, created_at, updated_at, user_login, avatar_url, body }, repo: { full_name } }
+        // Check event type first
+        struct TypeCheck: Codable { let type: String? }
+        let typeCheck = try? JSONDecoder().decode(TypeCheck.self, from: data)
+
+        if typeCheck?.type == "review_event" {
+            decodeReviewEvent(data)
+        } else {
+            decodePREvent(data)
+        }
+    }
+
+    private func decodeReviewEvent(_ data: Data) {
+        struct WSReviewMessage: Codable {
+            let review: ReviewData
+            let pr: PRRef
+            let repo: RepoData
+
+            struct ReviewData: Codable {
+                let state: String
+                let user_login: String?
+                let avatar_url: String?
+            }
+            struct PRRef: Codable { let number: Int }
+            struct RepoData: Codable { let full_name: String? }
+        }
+
+        guard let message = try? JSONDecoder().decode(WSReviewMessage.self, from: data) else { return }
+        let repo = message.repo.full_name ?? ""
+        DispatchQueue.main.async {
+            self.onReviewEvent?(repo, message.pr.number, message.review.state, message.review.user_login ?? "", message.review.avatar_url)
+        }
+    }
+
+    private func decodePREvent(_ data: Data) {
         struct WSMessage: Codable {
             let action: String
             let pr: PRData

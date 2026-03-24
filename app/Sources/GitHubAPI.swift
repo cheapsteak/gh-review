@@ -323,6 +323,119 @@ actor GitHubAPI {
         }
     }
 
+    struct MergeStatus {
+        let mergeable: Bool?        // nil = still computing
+        let mergeableState: String  // clean, dirty, unstable, blocked, unknown
+    }
+
+    func fetchMergeStatus(repo: String, number: Int) async throws -> MergeStatus {
+        guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
+            throw URLError(.badURL)
+        }
+        let request = authorizedRequest(url: url)
+        let (data, _) = try await session.data(for: request)
+
+        struct PRDetailResponse: Codable {
+            let mergeable: Bool?
+            let mergeable_state: String?
+        }
+
+        let detail = try JSONDecoder().decode(PRDetailResponse.self, from: data)
+        return MergeStatus(mergeable: detail.mergeable, mergeableState: detail.mergeable_state ?? "unknown")
+    }
+
+    func mergePR(repo: String, number: Int) async throws {
+        // First try merge queue (enablePullRequestAutoMerge via GraphQL)
+        // Get the PR node ID
+        guard let prURL = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
+            throw URLError(.badURL)
+        }
+        let prRequest = authorizedRequest(url: prURL)
+        let (prData, _) = try await session.data(for: prRequest)
+
+        struct PRNodeResponse: Codable { let node_id: String }
+        let nodeResponse = try JSONDecoder().decode(PRNodeResponse.self, from: prData)
+
+        // Try GraphQL enablePullRequestAutoMerge (works with merge queues)
+        guard let graphqlURL = URL(string: "https://api.github.com/graphql") else {
+            throw URLError(.badURL)
+        }
+        var gqlRequest = authorizedRequest(url: graphqlURL)
+        gqlRequest.httpMethod = "POST"
+        gqlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let mutation = """
+        mutation { enablePullRequestAutoMerge(input: { pullRequestId: "\(nodeResponse.node_id)", mergeMethod: SQUASH }) { clientMutationId } }
+        """
+        let gqlBody = ["query": mutation]
+        gqlRequest.httpBody = try JSONEncoder().encode(gqlBody)
+
+        let (gqlData, gqlResponse) = try await session.data(for: gqlRequest)
+        let httpResp = gqlResponse as? HTTPURLResponse
+
+        // Check for GraphQL errors — if auto-merge isn't available, fall back to direct merge
+        if let httpResp, httpResp.statusCode == 200 {
+            struct GQLResponse: Codable {
+                let errors: [GQLError]?
+                struct GQLError: Codable { let message: String }
+            }
+            if let gqlResult = try? JSONDecoder().decode(GQLResponse.self, from: gqlData),
+               let errors = gqlResult.errors, !errors.isEmpty {
+                // Fall back to direct merge
+                try await directMerge(repo: repo, number: number)
+            }
+            // Success — PR is queued
+        } else {
+            try await directMerge(repo: repo, number: number)
+        }
+    }
+
+    private func directMerge(repo: String, number: Int) async throws {
+        guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)/merge") else {
+            throw URLError(.badURL)
+        }
+        var request = authorizedRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: String] = ["merge_method": "squash"]
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+
+    func fetchGeneratedPatterns(repo: String) async throws -> [String] {
+        // Fetch .gitattributes from repo root
+        guard let url = URL(string: "\(baseURL)/repos/\(repo)/contents/.gitattributes") else {
+            throw URLError(.badURL)
+        }
+        var request = authorizedRequest(url: url)
+        request.setValue("application/vnd.github.raw+json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            return []
+        }
+        guard let content = String(data: data, encoding: .utf8) else { return [] }
+
+        // Parse lines like: "path/pattern linguist-generated" or "path/pattern linguist-generated=true"
+        var patterns: [String] = []
+        for line in content.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if trimmed.contains("linguist-generated") || trimmed.contains("binary") {
+                let parts = trimmed.split(separator: " ", maxSplits: 1)
+                if let pattern = parts.first {
+                    patterns.append(String(pattern))
+                }
+            }
+        }
+        return patterns
+    }
+
     func approvePR(repo: String, number: Int) async throws {
         guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)/reviews") else {
             throw URLError(.badURL)

@@ -1,4 +1,5 @@
 import SwiftUI
+import Highlightr
 
 struct PRDetailView: View {
     let pr: PullRequest
@@ -9,6 +10,8 @@ struct PRDetailView: View {
     @State private var diffError: String?
     @State private var workflowRuns: [WorkflowRun] = []
     @State private var isLoadingRuns = false
+    @State private var generatedPatterns: [String] = []
+    @State private var collapsedFiles: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -33,12 +36,24 @@ struct PRDetailView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 200)
                 } else {
-                    LazyVStack(alignment: .leading, spacing: 16) {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         ForEach(diffFiles) { file in
-                            DiffFileView(file: file)
+                            let isCollapsed = collapsedFiles.contains(file.filename)
+                            Section {
+                                if !isCollapsed {
+                                    DiffFileContentView(file: file)
+                                }
+                            } header: {
+                                DiffFileHeaderView(file: file, isCollapsed: isCollapsed) {
+                                    if collapsedFiles.contains(file.filename) {
+                                        collapsedFiles.remove(file.filename)
+                                    } else {
+                                        collapsedFiles.insert(file.filename)
+                                    }
+                                }
+                            }
                         }
                     }
-                    .padding()
                 }
             }
         }
@@ -149,11 +164,27 @@ struct PRDetailView: View {
         }
     }
 
+    private func shouldCollapseByDefault(_ file: DiffFile) -> Bool {
+        if file.patch == nil { return true }
+        for pattern in generatedPatterns {
+            if matchGlob(pattern: pattern, path: file.filename) { return true }
+        }
+        return false
+    }
+
+    private func applyDefaultCollapseState() {
+        for file in diffFiles where shouldCollapseByDefault(file) {
+            collapsedFiles.insert(file.filename)
+        }
+    }
+
     private func loadDiff() {
         diffFiles = []
         diffError = nil
         isLoadingDiff = true
         isLoadingRuns = true
+        generatedPatterns = []
+        collapsedFiles = []
 
         let pat = appState.pat
         guard !pat.isEmpty else {
@@ -165,9 +196,14 @@ struct PRDetailView: View {
 
         let api = GitHubAPI(pat: pat)
         Task {
+            async let filesTask = api.fetchDiffFiles(repo: pr.repo, number: pr.number)
+            async let patternsTask: [String] = (try? api.fetchGeneratedPatterns(repo: pr.repo)) ?? []
             do {
-                let files = try await api.fetchDiffFiles(repo: pr.repo, number: pr.number)
+                let files = try await filesTask
+                let patterns = await patternsTask
                 diffFiles = files
+                generatedPatterns = patterns
+                applyDefaultCollapseState()
             } catch {
                 diffError = error.localizedDescription
             }
@@ -202,15 +238,90 @@ struct PRDetailView: View {
     }
 }
 
-struct DiffFileView: View {
-    let file: DiffFile
+// Shared highlighter instance
+private let sharedHighlightr: Highlightr? = {
+    let h = Highlightr()
+    h?.setTheme(to: "github")
+    return h
+}()
 
-    private var lineCount: Int {
-        file.patch?.components(separatedBy: "\n").count ?? 0
+private func languageForFilename(_ filename: String) -> String? {
+    let ext = (filename as NSString).pathExtension.lowercased()
+    let map: [String: String] = [
+        "swift": "swift", "ts": "typescript", "tsx": "typescript", "js": "javascript",
+        "jsx": "javascript", "py": "python", "rb": "ruby", "go": "go", "rs": "rust",
+        "java": "java", "kt": "kotlin", "cpp": "cpp", "c": "c", "h": "c", "hpp": "cpp",
+        "cs": "csharp", "css": "css", "scss": "scss", "html": "xml", "xml": "xml",
+        "json": "json", "yaml": "yaml", "yml": "yaml", "toml": "ini", "sql": "sql",
+        "sh": "bash", "bash": "bash", "zsh": "bash", "md": "markdown", "tf": "hcl",
+        "graphql": "graphql", "gql": "graphql", "proto": "protobuf",
+    ]
+    return map[ext]
+}
+
+struct DiffFileHeaderView: View {
+    let file: DiffFile
+    let isCollapsed: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack {
+            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 12)
+            statusIcon
+            Text(file.filename)
+                .font(.system(.body, design: .monospaced))
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            if file.additions > 0 {
+                Text("+\(file.additions)")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+            if file.deletions > 0 {
+                Text("-\(file.deletions)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+        .contentShape(Rectangle())
+        .onTapGesture { onToggle() }
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
     }
 
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch file.status {
+        case "added":
+            Image(systemName: "plus.circle.fill")
+                .foregroundStyle(.green)
+        case "removed":
+            Image(systemName: "minus.circle.fill")
+                .foregroundStyle(.red)
+        case "renamed":
+            Image(systemName: "arrow.right.circle.fill")
+                .foregroundStyle(.blue)
+        default:
+            Image(systemName: "pencil.circle.fill")
+                .foregroundStyle(.orange)
+        }
+    }
+}
+
+struct DiffFileContentView: View {
+    let file: DiffFile
+    @State private var isFullyExpanded = false
+
     private static let previewLineCount = 40
-    @State private var isExpanded = false
 
     private var lines: [String] {
         file.patch?.components(separatedBy: "\n") ?? []
@@ -220,42 +331,25 @@ struct DiffFileView: View {
         lines.count > Self.previewLineCount
     }
 
+    private var highlightedLines: [HighlightedDiffLine] {
+        let lang = languageForFilename(file.filename)
+        return buildHighlightedLines(lines: lines, language: lang)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // File header
-            HStack {
-                statusIcon
-                Text(file.filename)
-                    .font(.system(.body, design: .monospaced))
-                    .fontWeight(.medium)
-                Spacer()
-                if file.additions > 0 {
-                    Text("+\(file.additions)")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                }
-                if file.deletions > 0 {
-                    Text("-\(file.deletions)")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(.controlBackgroundColor))
-
-            // Diff content
-            if let _ = file.patch {
-                let visibleLines = isExpanded || !isLargeFile ? lines : Array(lines.prefix(Self.previewLineCount))
+            if file.patch != nil {
+                let allLines = highlightedLines
+                let visibleLines = isFullyExpanded || !isLargeFile ? allLines : Array(allLines.prefix(Self.previewLineCount))
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(visibleLines.enumerated()), id: \.offset) { _, line in
-                        DiffLineView(line: line)
+                        DiffHighlightedLineView(line: line)
                     }
                 }
 
-                if isLargeFile && !isExpanded {
+                if isLargeFile && !isFullyExpanded {
                     Button {
-                        isExpanded = true
+                        isFullyExpanded = true
                     } label: {
                         HStack {
                             Spacer()
@@ -278,52 +372,161 @@ struct DiffFileView: View {
                     .padding(12)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separatorColor), lineWidth: 1)
-        )
-    }
-
-    @ViewBuilder
-    private var statusIcon: some View {
-        switch file.status {
-        case "added":
-            Image(systemName: "plus.circle.fill")
-                .foregroundStyle(.green)
-        case "removed":
-            Image(systemName: "minus.circle.fill")
-                .foregroundStyle(.red)
-        case "renamed":
-            Image(systemName: "arrow.right.circle.fill")
-                .foregroundStyle(.blue)
-        default:
-            Image(systemName: "pencil.circle.fill")
-                .foregroundStyle(.orange)
-        }
     }
 }
 
-struct DiffLineView: View {
-    let line: String
+private func matchGlob(pattern: String, path: String) -> Bool {
+    // Simple glob matching supporting * and **
+    let regexPattern = "^" + pattern
+        .replacingOccurrences(of: ".", with: "\\.")
+        .replacingOccurrences(of: "**", with: "<<<GLOBSTAR>>>")
+        .replacingOccurrences(of: "*", with: "[^/]*")
+        .replacingOccurrences(of: "<<<GLOBSTAR>>>", with: ".*")
+    + "$"
+    return path.range(of: regexPattern, options: .regularExpression) != nil
+}
+
+struct HighlightedDiffLine {
+    let attributed: NSAttributedString
+    let background: Color
+}
+
+private func buildHighlightedLines(lines: [String], language: String?) -> [HighlightedDiffLine] {
+    guard let highlightr = sharedHighlightr else {
+        // Fallback: no highlighting
+        return lines.map { line in
+            let bg = diffBackground(for: line)
+            let attr = NSAttributedString(string: line, attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .foregroundColor: NSColor.labelColor
+            ])
+            return HighlightedDiffLine(attributed: attr, background: bg)
+        }
+    }
+
+    // Extract code content (strip +/- prefix), highlight as one block, then split back
+    var codeLines: [String] = []
+    var prefixes: [String] = []
+    for line in lines {
+        if line.hasPrefix("@@") || line.isEmpty {
+            codeLines.append(line)
+            prefixes.append("")
+        } else if line.hasPrefix("+") || line.hasPrefix("-") {
+            prefixes.append(String(line.prefix(1)))
+            codeLines.append(String(line.dropFirst()))
+        } else if line.hasPrefix(" ") {
+            prefixes.append(" ")
+            codeLines.append(String(line.dropFirst()))
+        } else {
+            prefixes.append("")
+            codeLines.append(line)
+        }
+    }
+
+    let fullCode = codeLines.joined(separator: "\n")
+    let highlighted = highlightr.highlight(fullCode, as: language)
+
+    guard let highlighted else {
+        return lines.map { line in
+            HighlightedDiffLine(
+                attributed: NSAttributedString(string: line, attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+                ]),
+                background: diffBackground(for: line)
+            )
+        }
+    }
+
+    // Split the highlighted attributed string back into lines
+    let fullString = highlighted.string
+    var lineRanges: [NSRange] = []
+    var searchStart = fullString.startIndex
+    for (i, codeLine) in codeLines.enumerated() {
+        let lineStart = fullString.distance(from: fullString.startIndex, to: searchStart)
+        let lineLength = codeLine.count
+        lineRanges.append(NSRange(location: lineStart, length: lineLength))
+        // Move past this line + newline
+        let advance = lineLength + (i < codeLines.count - 1 ? 1 : 0)
+        searchStart = fullString.index(searchStart, offsetBy: min(advance, fullString.distance(from: searchStart, to: fullString.endIndex)))
+    }
+
+    var result: [HighlightedDiffLine] = []
+    let monoFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
+    for (i, line) in lines.enumerated() {
+        let bg = diffBackground(for: line)
+
+        if i < lineRanges.count {
+            let range = lineRanges[i]
+            let clampedRange = NSRange(
+                location: range.location,
+                length: min(range.length, highlighted.length - range.location)
+            )
+            if clampedRange.length > 0 {
+                let lineAttr = NSMutableAttributedString()
+                // Add prefix back
+                let prefix = prefixes[i]
+                if !prefix.isEmpty {
+                    lineAttr.append(NSAttributedString(string: prefix, attributes: [
+                        .font: monoFont,
+                        .foregroundColor: NSColor.labelColor
+                    ]))
+                }
+                let codePart = NSMutableAttributedString(attributedString: highlighted.attributedSubstring(from: clampedRange))
+                let codeRange = NSRange(location: 0, length: codePart.length)
+                // Override font to ensure consistent monospace
+                codePart.addAttribute(.font, value: monoFont, range: codeRange)
+                // Enforce minimum contrast — replace too-light foreground colors
+                codePart.enumerateAttribute(.foregroundColor, in: codeRange) { value, attrRange, _ in
+                    if let color = value as? NSColor, colorIsTooPale(color) {
+                        codePart.addAttribute(.foregroundColor, value: NSColor.labelColor, range: attrRange)
+                    }
+                }
+                lineAttr.append(codePart)
+                result.append(HighlightedDiffLine(attributed: lineAttr, background: bg))
+            } else {
+                result.append(HighlightedDiffLine(
+                    attributed: NSAttributedString(string: line, attributes: [.font: monoFont]),
+                    background: bg
+                ))
+            }
+        } else {
+            result.append(HighlightedDiffLine(
+                attributed: NSAttributedString(string: line, attributes: [.font: monoFont]),
+                background: bg
+            ))
+        }
+    }
+
+    return result
+}
+
+private func colorIsTooPale(_ color: NSColor) -> Bool {
+    guard let rgb = color.usingColorSpace(.sRGB) else { return false }
+    // Relative luminance (WCAG formula)
+    let luminance = 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent
+    return luminance > 0.6
+}
+
+private func diffBackground(for line: String) -> Color {
+    if line.hasPrefix("@@") {
+        return Color(.systemBlue).opacity(0.1)
+    } else if line.hasPrefix("+") {
+        return Color(.systemGreen).opacity(0.15)
+    } else if line.hasPrefix("-") {
+        return Color(.systemRed).opacity(0.15)
+    }
+    return .clear
+}
+
+struct DiffHighlightedLineView: View {
+    let line: HighlightedDiffLine
 
     var body: some View {
-        Text(line)
-            .font(.system(size: 12, design: .monospaced))
+        Text(AttributedString(line.attributed))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 1)
-            .background(backgroundColor)
-    }
-
-    private var backgroundColor: Color {
-        if line.hasPrefix("@@") {
-            return Color(.systemBlue).opacity(0.1)
-        } else if line.hasPrefix("+") {
-            return Color(.systemGreen).opacity(0.15)
-        } else if line.hasPrefix("-") {
-            return Color(.systemRed).opacity(0.15)
-        }
-        return .clear
+            .background(line.background)
     }
 }

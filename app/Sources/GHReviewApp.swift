@@ -309,7 +309,7 @@ class AppState: ObservableObject {
                 pullRequests.insert(newPR, at: 0)
             }
 
-            if isNew && action == "opened" {
+            if isNew && action == "opened" && pr.author != currentUsername {
                 sendNotification(pr: pr)
             }
         }

@@ -206,7 +206,7 @@ class AppState: ObservableObject {
     }
 
     var hasActiveFilters: Bool {
-        needsReviewOnly || readyToMergeOnly || hideDrafts || hideClosed
+        needsReviewOnly || hideDrafts || hideClosed
     }
 
     var filteredPullRequests: [PullRequest] {

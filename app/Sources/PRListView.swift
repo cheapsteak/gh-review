@@ -47,7 +47,6 @@ struct PRListView: View {
                 HStack(spacing: 6) {
                     Menu {
                         Toggle("Needs review", isOn: $appState.needsReviewOnly)
-                        Toggle("Ready to merge", isOn: $appState.readyToMergeOnly)
                         Toggle("Hide drafts", isOn: $appState.hideDrafts)
                         Toggle("Hide closed", isOn: $appState.hideClosed)
                     } label: {
@@ -64,6 +63,15 @@ struct PRListView: View {
                     }
                     .disabled(appState.isLoading)
                     .help("Refresh pull requests")
+
+                    Button {
+                        appState.readyToMergeOnly.toggle()
+                    } label: {
+                        Image(systemName: appState.readyToMergeOnly
+                              ? "arrow.triangle.merge.circle.fill"
+                              : "arrow.triangle.merge.circle")
+                    }
+                    .help("Show only ready to merge")
 
                     Circle()
                         .fill(appState.webSocketService.isConnected ? Color.green : Color.red)

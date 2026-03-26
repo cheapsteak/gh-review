@@ -328,6 +328,51 @@ actor GitHubAPI {
         let mergeableState: String  // clean, dirty, unstable, blocked, unknown
     }
 
+    struct ChecksStatus {
+        let total: Int
+        let completed: Int
+        let passed: Int  // success + skipped + neutral
+        var allPassed: Bool { total > 0 && completed == total && passed == total }
+        var anyFailed: Bool { completed > passed }
+        var pending: Bool { completed < total }
+    }
+
+    func fetchChecksStatus(repo: String, number: Int) async throws -> ChecksStatus {
+        // Get head SHA
+        guard let prURL = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
+            throw URLError(.badURL)
+        }
+        let prRequest = authorizedRequest(url: prURL)
+        let (prData, _) = try await session.data(for: prRequest)
+
+        struct PRHead: Codable { let head: Head; struct Head: Codable { let sha: String } }
+        let sha = try JSONDecoder().decode(PRHead.self, from: prData).head.sha
+
+        // Get check runs
+        guard let url = URL(string: "\(baseURL)/repos/\(repo)/commits/\(sha)/check-runs?per_page=100") else {
+            throw URLError(.badURL)
+        }
+        let request = authorizedRequest(url: url)
+        let (data, _) = try await session.data(for: request)
+
+        struct CheckRunsResponse: Codable {
+            let total_count: Int
+            let check_runs: [CheckRun]
+            struct CheckRun: Codable {
+                let status: String
+                let conclusion: String?
+            }
+        }
+
+        let response = try JSONDecoder().decode(CheckRunsResponse.self, from: data)
+        let completed = response.check_runs.filter { $0.status == "completed" }.count
+        let passed = response.check_runs.filter {
+            $0.conclusion == "success" || $0.conclusion == "skipped" || $0.conclusion == "neutral"
+        }.count
+
+        return ChecksStatus(total: response.total_count, completed: completed, passed: passed)
+    }
+
     func fetchMergeStatus(repo: String, number: Int) async throws -> MergeStatus {
         guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
             throw URLError(.badURL)
@@ -344,53 +389,44 @@ actor GitHubAPI {
         return MergeStatus(mergeable: detail.mergeable, mergeableState: detail.mergeable_state ?? "unknown")
     }
 
-    func mergePR(repo: String, number: Int) async throws {
-        // First try merge queue (enablePullRequestAutoMerge via GraphQL)
-        // Get the PR node ID
-        guard let prURL = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
+    private func fetchPRNodeId(repo: String, number: Int) async throws -> String {
+        guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
             throw URLError(.badURL)
         }
-        let prRequest = authorizedRequest(url: prURL)
-        let (prData, _) = try await session.data(for: prRequest)
-
+        let request = authorizedRequest(url: url)
+        let (data, _) = try await session.data(for: request)
         struct PRNodeResponse: Codable { let node_id: String }
-        let nodeResponse = try JSONDecoder().decode(PRNodeResponse.self, from: prData)
+        return try JSONDecoder().decode(PRNodeResponse.self, from: data).node_id
+    }
 
-        // Try GraphQL enablePullRequestAutoMerge (works with merge queues)
-        guard let graphqlURL = URL(string: "https://api.github.com/graphql") else {
+    func enqueuePR(repo: String, number: Int) async throws {
+        let nodeId = try await fetchPRNodeId(repo: repo, number: number)
+
+        guard let url = URL(string: "https://api.github.com/graphql") else {
             throw URLError(.badURL)
         }
-        var gqlRequest = authorizedRequest(url: graphqlURL)
-        gqlRequest.httpMethod = "POST"
-        gqlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var request = authorizedRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let mutation = """
-        mutation { enablePullRequestAutoMerge(input: { pullRequestId: "\(nodeResponse.node_id)", mergeMethod: SQUASH }) { clientMutationId } }
+        mutation { enqueuePullRequest(input: { pullRequestId: "\(nodeId)" }) { mergeQueueEntry { id position state } } }
         """
-        let gqlBody = ["query": mutation]
-        gqlRequest.httpBody = try JSONEncoder().encode(gqlBody)
+        request.httpBody = try JSONEncoder().encode(["query": mutation])
 
-        let (gqlData, gqlResponse) = try await session.data(for: gqlRequest)
-        let httpResp = gqlResponse as? HTTPURLResponse
+        let (data, _) = try await session.data(for: request)
 
-        // Check for GraphQL errors — if auto-merge isn't available, fall back to direct merge
-        if let httpResp, httpResp.statusCode == 200 {
-            struct GQLResponse: Codable {
-                let errors: [GQLError]?
-                struct GQLError: Codable { let message: String }
-            }
-            if let gqlResult = try? JSONDecoder().decode(GQLResponse.self, from: gqlData),
-               let errors = gqlResult.errors, !errors.isEmpty {
-                // Fall back to direct merge
-                try await directMerge(repo: repo, number: number)
-            }
-            // Success — PR is queued
-        } else {
-            try await directMerge(repo: repo, number: number)
+        struct GQLResponse: Codable {
+            let errors: [GQLError]?
+            struct GQLError: Codable { let message: String }
+        }
+        if let result = try? JSONDecoder().decode(GQLResponse.self, from: data),
+           let errors = result.errors, !errors.isEmpty {
+            throw URLError(.badServerResponse)
         }
     }
 
-    private func directMerge(repo: String, number: Int) async throws {
+    func mergePR(repo: String, number: Int) async throws {
         guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)/merge") else {
             throw URLError(.badURL)
         }

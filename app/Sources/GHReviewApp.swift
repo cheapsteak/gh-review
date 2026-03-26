@@ -149,6 +149,7 @@ class AppState: ObservableObject {
     var currentUsername: String?
     @Published var mergeStatus: [String: GitHubAPI.MergeStatus] = [:]  // "repo#number" -> status
     @Published var needsReviewOnly = false
+    @Published var readyToMergeOnly = false
     @Published var hideDrafts = true
     @Published var hideClosed = true
 
@@ -205,7 +206,7 @@ class AppState: ObservableObject {
     }
 
     var hasActiveFilters: Bool {
-        needsReviewOnly || hideDrafts || hideClosed
+        needsReviewOnly || readyToMergeOnly || hideDrafts || hideClosed
     }
 
     var filteredPullRequests: [PullRequest] {
@@ -218,6 +219,13 @@ class AppState: ObservableObject {
         }
         if needsReviewOnly {
             result = result.filter { !hasHumanApproval($0) }
+        }
+        if readyToMergeOnly {
+            result = result.filter { pr in
+                let key = prKey(pr)
+                guard let status = mergeStatus[key] else { return false }
+                return status.mergeable == true
+            }
         }
         return result
     }
@@ -288,6 +296,11 @@ class AppState: ObservableObject {
         }
         pullRequests = allPRs.sorted { $0.createdAt > $1.createdAt }
         isLoading = false
+
+        // Fetch merge status for all open PRs in background
+        for pr in allPRs where pr.state == "open" {
+            Task { await refreshMergeStatus(repo: pr.repo, number: pr.number) }
+        }
     }
 
     private func handlePREvent(action: String, pr: PullRequest) {

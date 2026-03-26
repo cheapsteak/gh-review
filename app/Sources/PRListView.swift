@@ -47,6 +47,7 @@ struct PRListView: View {
                 HStack(spacing: 6) {
                     Menu {
                         Toggle("Needs review", isOn: $appState.needsReviewOnly)
+                        Toggle("Ready to merge", isOn: $appState.readyToMergeOnly)
                         Toggle("Hide drafts", isOn: $appState.hideDrafts)
                         Toggle("Hide closed", isOn: $appState.hideClosed)
                     } label: {
@@ -63,13 +64,6 @@ struct PRListView: View {
                     }
                     .disabled(appState.isLoading)
                     .help("Refresh pull requests")
-
-                    Button {
-                        appState.testNotification()
-                    } label: {
-                        Image(systemName: "bell")
-                    }
-                    .help("Test notification")
 
                     Circle()
                         .fill(appState.webSocketService.isConnected ? Color.green : Color.red)

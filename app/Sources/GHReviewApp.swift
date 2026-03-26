@@ -197,7 +197,11 @@ class AppState: ObservableObject {
 
     func hasHumanApproval(_ pr: PullRequest) -> Bool {
         let approvals = approvals(for: pr)
-        return approvals.contains { !$0.author.contains("longeye-claude-reviewer") }
+        return approvals.contains { !isBot($0.author) }
+    }
+
+    private func isBot(_ login: String) -> Bool {
+        login.hasSuffix("[bot]") || login.contains("longeye-claude-reviewer")
     }
 
     var hasActiveFilters: Bool {
@@ -259,6 +263,11 @@ class AppState: ObservableObject {
         webSocketService.onReviewEvent = { [weak self] repo, number, state, login, avatarURL in
             Task { @MainActor in
                 self?.handleReviewEvent(repo: repo, number: number, state: state, login: login, avatarURL: avatarURL)
+            }
+        }
+        webSocketService.onCheckRunEvent = { [weak self] repo, prNumbers, status, conclusion in
+            Task { @MainActor in
+                self?.handleCheckRunEvent(repo: repo, prNumbers: prNumbers, status: status, conclusion: conclusion)
             }
         }
     }
@@ -340,14 +349,81 @@ class AppState: ObservableObject {
     }
 
     @Published var mergeQueued: Set<String> = []  // "repo#number" keys for PRs in merge queue
+    @Published var mergeWhenReady: [String: MergeWhenReadyState] = [:]  // "repo#number" -> state
+
+    enum MergeWhenReadyState: Equatable {
+        case waitingForChecks
+        case checksFailed
+        case enqueuing
+        case enqueued
+    }
 
     func mergePR(repo: String, number: Int) async {
         guard let api = gitHubAPI else { return }
         do {
             try await api.mergePR(repo: repo, number: number)
-            let key = "\(repo)#\(number)"
+        } catch {}
+    }
+
+    func enqueuePR(repo: String, number: Int) async {
+        guard let api = gitHubAPI else { return }
+        let key = "\(repo)#\(number)"
+        do {
+            try await api.enqueuePR(repo: repo, number: number)
             mergeQueued.insert(key)
         } catch {}
+    }
+
+    func mergeWhenReady(repo: String, number: Int) {
+        let key = "\(repo)#\(number)"
+        guard mergeWhenReady[key] == nil else { return }
+        mergeWhenReady[key] = .waitingForChecks
+        // Check immediately in case checks already passed
+        Task { await tryEnqueueIfReady(repo: repo, number: number) }
+    }
+
+    func cancelMergeWhenReady(repo: String, number: Int) {
+        let key = "\(repo)#\(number)"
+        mergeWhenReady.removeValue(forKey: key)
+    }
+
+    private func handleCheckRunEvent(repo: String, prNumbers: [Int], status: String, conclusion: String?) {
+        // For each PR that has "merge when ready" pending, check if all checks now pass
+        for number in prNumbers {
+            let key = "\(repo)#\(number)"
+            guard mergeWhenReady[key] == .waitingForChecks else { continue }
+
+            if conclusion == "failure" || conclusion == "cancelled" || conclusion == "timed_out" {
+                mergeWhenReady[key] = .checksFailed
+            } else {
+                // A check completed successfully — check if ALL checks are now done
+                Task { await tryEnqueueIfReady(repo: repo, number: number) }
+            }
+        }
+    }
+
+    private func tryEnqueueIfReady(repo: String, number: Int) async {
+        let key = "\(repo)#\(number)"
+        guard mergeWhenReady[key] == .waitingForChecks else { return }
+        guard let api = gitHubAPI else { return }
+
+        do {
+            let checks = try await api.fetchChecksStatus(repo: repo, number: number)
+            if checks.allPassed {
+                mergeWhenReady[key] = .enqueuing
+                try await api.enqueuePR(repo: repo, number: number)
+                mergeWhenReady[key] = .enqueued
+                mergeQueued.insert(key)
+            } else if checks.anyFailed {
+                mergeWhenReady[key] = .checksFailed
+            }
+            // Otherwise still pending — wait for more check_run events
+        } catch {
+            // If enqueue failed, mark as failed
+            if mergeWhenReady[key] == .enqueuing {
+                mergeWhenReady[key] = .checksFailed
+            }
+        }
     }
 
     private func sendNotification(pr: PullRequest) {

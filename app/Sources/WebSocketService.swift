@@ -12,6 +12,7 @@ class WebSocketService: ObservableObject {
 
     var onPREvent: ((String, PullRequest) -> Void)?
     var onReviewEvent: ((String, Int, String, String, String?) -> Void)?  // (repo, number, state, login, avatarURL)
+    var onCheckRunEvent: ((String, [Int], String, String?) -> Void)?  // (repo, prNumbers, status, conclusion)
 
     func connect(url: URL) {
         disconnect()
@@ -74,10 +75,36 @@ class WebSocketService: ObservableObject {
         struct TypeCheck: Codable { let type: String? }
         let typeCheck = try? JSONDecoder().decode(TypeCheck.self, from: data)
 
-        if typeCheck?.type == "review_event" {
+        switch typeCheck?.type {
+        case "review_event":
             decodeReviewEvent(data)
-        } else {
+        case "check_run_event":
+            decodeCheckRunEvent(data)
+        default:
             decodePREvent(data)
+        }
+    }
+
+    private func decodeCheckRunEvent(_ data: Data) {
+        struct WSCheckRunMessage: Codable {
+            let check_run: CheckRunData
+            let prs: [PRRef]
+            let repo: RepoData
+
+            struct CheckRunData: Codable {
+                let name: String
+                let status: String
+                let conclusion: String?
+            }
+            struct PRRef: Codable { let number: Int }
+            struct RepoData: Codable { let full_name: String? }
+        }
+
+        guard let message = try? JSONDecoder().decode(WSCheckRunMessage.self, from: data) else { return }
+        let repo = message.repo.full_name ?? ""
+        let prNumbers = message.prs.map(\.number)
+        DispatchQueue.main.async {
+            self.onCheckRunEvent?(repo, prNumbers, message.check_run.status, message.check_run.conclusion)
         }
     }
 

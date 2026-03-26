@@ -156,7 +156,6 @@ struct PRToolbarMergeButtons: View {
     private var key: String { "\(pr.repo)#\(pr.number)" }
     private var status: GitHubAPI.MergeStatus? { appState.mergeStatus[key] }
     private var isQueued: Bool { appState.mergeQueued.contains(key) }
-    private var mwrState: AppState.MergeWhenReadyState? { appState.mergeWhenReady[key] }
 
     // blocked + mergeable = merge queue repo; clean + mergeable = direct merge
     private var hasMergeQueue: Bool {
@@ -168,17 +167,15 @@ struct PRToolbarMergeButtons: View {
             statusLabel("Merged", icon: "arrow.triangle.merge", color: .green)
         } else if pr.state == "closed" {
             EmptyView()
-        } else if isQueued || mwrState == .enqueued {
+        } else if isQueued {
             statusLabel("Queued", icon: "clock.arrow.circlepath", color: .orange)
-        } else if let mwrState {
-            mergeWhenReadyView(mwrState)
         } else if isWorking {
             ProgressView()
                 .controlSize(.small)
         } else if let status = status, status.mergeable == true {
             if hasMergeQueue {
-                ActionCapsuleButton(text: "Merge when ready", icon: "clock.badge.checkmark", color: .orange) {
-                    appState.mergeWhenReady(repo: pr.repo, number: pr.number)
+                ActionCapsuleButton(text: "Queue to merge", icon: "text.line.first.and.arrowtriangle.forward", color: .orange) {
+                    Task { await enqueue() }
                 }
             } else {
                 ActionCapsuleButton(text: "Merge", icon: "arrow.triangle.merge", color: .green) {
@@ -189,41 +186,6 @@ struct PRToolbarMergeButtons: View {
             statusLabel(status.mergeableState == "dirty" ? "Conflicts" : "Not mergeable", icon: "xmark.circle", color: .secondary)
         } else {
             EmptyView()
-        }
-    }
-
-    @ViewBuilder
-    private func mergeWhenReadyView(_ state: AppState.MergeWhenReadyState) -> some View {
-        switch state {
-        case .waitingForChecks:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Waiting for checks").font(.caption)
-            }
-            .foregroundStyle(.orange)
-            .onTapGesture {
-                appState.cancelMergeWhenReady(repo: pr.repo, number: pr.number)
-            }
-        case .enqueuing:
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text("Enqueuing").font(.caption)
-            }
-            .foregroundStyle(.orange)
-        case .checksFailed:
-            HStack(spacing: 4) {
-                statusLabel("Checks failed", icon: "xmark.circle", color: .red)
-                Button {
-                    appState.cancelMergeWhenReady(repo: pr.repo, number: pr.number)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-        case .enqueued:
-            statusLabel("Queued", icon: "clock.arrow.circlepath", color: .orange)
         }
     }
 
@@ -238,6 +200,12 @@ struct PRToolbarMergeButtons: View {
     private func merge() async {
         isWorking = true
         await appState.mergePR(repo: pr.repo, number: pr.number)
+        isWorking = false
+    }
+
+    private func enqueue() async {
+        isWorking = true
+        await appState.enqueuePR(repo: pr.repo, number: pr.number)
         isWorking = false
     }
 }

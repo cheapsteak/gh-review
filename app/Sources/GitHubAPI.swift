@@ -328,51 +328,6 @@ actor GitHubAPI {
         let mergeableState: String  // clean, dirty, unstable, blocked, unknown
     }
 
-    struct ChecksStatus {
-        let total: Int
-        let completed: Int
-        let passed: Int  // success + skipped + neutral
-        var allPassed: Bool { total > 0 && completed == total && passed == total }
-        var anyFailed: Bool { completed > passed }
-        var pending: Bool { completed < total }
-    }
-
-    func fetchChecksStatus(repo: String, number: Int) async throws -> ChecksStatus {
-        // Get head SHA
-        guard let prURL = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
-            throw URLError(.badURL)
-        }
-        let prRequest = authorizedRequest(url: prURL)
-        let (prData, _) = try await session.data(for: prRequest)
-
-        struct PRHead: Codable { let head: Head; struct Head: Codable { let sha: String } }
-        let sha = try JSONDecoder().decode(PRHead.self, from: prData).head.sha
-
-        // Get check runs
-        guard let url = URL(string: "\(baseURL)/repos/\(repo)/commits/\(sha)/check-runs?per_page=100") else {
-            throw URLError(.badURL)
-        }
-        let request = authorizedRequest(url: url)
-        let (data, _) = try await session.data(for: request)
-
-        struct CheckRunsResponse: Codable {
-            let total_count: Int
-            let check_runs: [CheckRun]
-            struct CheckRun: Codable {
-                let status: String
-                let conclusion: String?
-            }
-        }
-
-        let response = try JSONDecoder().decode(CheckRunsResponse.self, from: data)
-        let completed = response.check_runs.filter { $0.status == "completed" }.count
-        let passed = response.check_runs.filter {
-            $0.conclusion == "success" || $0.conclusion == "skipped" || $0.conclusion == "neutral"
-        }.count
-
-        return ChecksStatus(total: response.total_count, completed: completed, passed: passed)
-    }
-
     func fetchMergeStatus(repo: String, number: Int) async throws -> MergeStatus {
         guard let url = URL(string: "\(baseURL)/repos/\(repo)/pulls/\(number)") else {
             throw URLError(.badURL)

@@ -27,7 +27,7 @@ For a map of key files and what they do: consult `references/file-map.md`
 
 ### Swift Package Structure
 
-Single executable target `GHReview` with no external dependencies except `swift-markdown-ui` for GFM rendering. macOS 14+ deployment target.
+Single executable target `GHReview`. macOS 14+ deployment target. Dependencies: `swift-markdown-ui` (2.0.2+) for GFM rendering, `Highlightr` (2.2.1+) for syntax highlighting in diffs.
 
 ### .app Bundle
 
@@ -44,17 +44,22 @@ All requests use `actor GitHubAPI` with async/await. Auth via classic PAT with `
 
 Key endpoints used:
 - `GET /repos/{repo}/pulls` — list open PRs
+- `GET /repos/{repo}/pulls/{number}` — merge status, node_id, head SHA
 - `GET /repos/{repo}/pulls/{number}/files` — get diff
 - `POST /repos/{repo}/pulls/{number}/reviews` — approve PR
-- `GET /repos/{repo}/pulls/{number}/reviews` — get approvals
+- `GET /repos/{repo}/pulls/{number}/reviews` — get approvals / reviews
+- `PUT /repos/{repo}/pulls/{number}/merge` — direct squash merge
 - `GET /repos/{repo}/issues/{number}/comments` — get PR comments
 - `GET /repos/{repo}/actions/runs` — workflow runs by commit SHA
 - `GET /repos/{repo}/actions/runs/{id}/jobs` — failure details
+- `GET /repos/{repo}/commits/{sha}/check-runs` — check run status summary
+- `GET /repos/{repo}/contents/.gitattributes` — linguist-generated patterns
+- `POST /graphql` — `enqueuePullRequest` mutation for merge queue
 
 ### Relay Server
 
 Cloudflare Worker with a single Durable Object (`WebSocketRoom`) using the Hibernatable WebSocket API. Two routes:
-- `POST /webhook` — verifies `X-Hub-Signature-256`, extracts PR event, broadcasts to clients
+- `POST /webhook` — verifies `X-Hub-Signature-256`, handles 3 event types (`pull_request`, `pull_request_review`, `check_run`), extracts typed envelope, broadcasts to clients
 - `GET /ws?token=<TOKEN>` — authenticates and upgrades to WebSocket
 
 Secrets (`WEBHOOK_SECRET`, `AUTH_TOKEN`) are set via `wrangler secret put`.
@@ -66,7 +71,12 @@ Secrets (`WEBHOOK_SECRET`, `AUTH_TOKEN`) are set via `wrangler secret put`.
 - `prApprovals` — cached per PR, keyed by `"repo#number"`
 - `approvedPRs` — set of PRs the current user has approved
 - `currentUsername` — cached after first API call
+- `mergeStatus` — per-PR `MergeStatus` (mergeable, mergeableState)
+- `mergeQueued` — set of PRs added to merge queue
+- `mergeWhenReady` — per-PR `MergeWhenReadyState` (waitingForChecks, checksFailed, enqueuing, enqueued)
 - Filter states: `needsReviewOnly`, `hideDrafts`, `hideClosed`
+- WebSocket callbacks: `onPREvent`, `onReviewEvent`, `onCheckRunEvent`
+- Bot detection: `isBot()` helper (suffix `[bot]` or contains `longeye-claude-reviewer`)
 
 Settings (PAT, relay URL, relay token, repos) stored in `UserDefaults`.
 
@@ -76,7 +86,7 @@ Uses `swift-markdown-ui` with a custom `ghReview` theme (transparent background,
 
 ### Notifications
 
-Uses `UNUserNotificationCenter` when running as `.app` bundle (with bundle ID + code signing). Falls back to `osascript display notification` when running via `swift run`.
+Uses `UNUserNotificationCenter` when running as `.app` bundle (with bundle ID + code signing). Falls back to `osascript display notification` when running via `swift run`. Notifications use per-PR identifiers (`pr-{repo}-{number}`) for targeted dismiss. Category `NEW_PR` with `APPROVE_PR` action button. Approving from any surface dismisses the notification. Own PRs are suppressed (`author != currentUsername`).
 
 ## Common Tasks
 

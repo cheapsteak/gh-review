@@ -1,0 +1,1 @@
+- Prefer webhook events over polling for real-time state changes (check runs, reviews, PR updates). The relay server already forwards GitHub webhook events via WebSocket — extend that rather than adding client-side polling.

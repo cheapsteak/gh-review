@@ -149,7 +149,7 @@ class AppState: ObservableObject {
     var currentUsername: String?
     @Published var mergeStatus: [String: GitHubAPI.MergeStatus] = [:]  // "repo#number" -> status
     @Published var needsReviewOnly = false
-    @Published var readyToMergeOnly = false
+    @Published var myPRsOnly = false
     @Published var hideDrafts = true
     @Published var hideClosed = true
 
@@ -220,12 +220,8 @@ class AppState: ObservableObject {
         if needsReviewOnly {
             result = result.filter { !hasHumanApproval($0) }
         }
-        if readyToMergeOnly {
-            result = result.filter { pr in
-                let key = prKey(pr)
-                guard let status = mergeStatus[key] else { return false }
-                return status.mergeable == true
-            }
+        if myPRsOnly {
+            result = result.filter { $0.author == currentUsername }
         }
         return result
     }

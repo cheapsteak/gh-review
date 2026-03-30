@@ -65,13 +65,13 @@ struct PRListView: View {
                     .help("Refresh pull requests")
 
                     Button {
-                        appState.readyToMergeOnly.toggle()
+                        appState.myPRsOnly.toggle()
                     } label: {
-                        Image(systemName: appState.readyToMergeOnly
-                              ? "arrow.triangle.merge.circle.fill"
-                              : "arrow.triangle.merge.circle")
+                        Image(systemName: appState.myPRsOnly
+                              ? "person.fill"
+                              : "person")
                     }
-                    .help("Show only ready to merge")
+                    .help("Show only my PRs")
 
                     Circle()
                         .fill(appState.webSocketService.isConnected ? Color.green : Color.red)

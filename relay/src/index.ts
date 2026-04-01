@@ -97,34 +97,12 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
 
   let envelope: Record<string, unknown>;
 
-  if (eventType === "check_run") {
-    if (action !== "completed") {
-      return new Response("Ignored action", { status: 200 });
-    }
-    const checkRun = payload.check_run as Record<string, unknown> | undefined;
-    if (!checkRun) {
-      return new Response("Not a check_run event", { status: 200 });
-    }
-    // Extract PR numbers from the check run's pull_requests array
-    const prs = checkRun.pull_requests as Array<Record<string, unknown>> | undefined;
-    const repo = payload.repository as Record<string, unknown> | undefined;
-    if (!prs || prs.length === 0) {
-      return new Response("No associated PRs", { status: 200 });
-    }
-    envelope = {
-      type: "check_run_event",
-      check_run: {
-        name: checkRun.name,
-        status: checkRun.status,
-        conclusion: checkRun.conclusion,
-      },
-      prs: prs.map((pr) => ({ number: pr.number })),
-      repo: {
-        full_name: repo?.full_name ?? null,
-      },
-      timestamp: new Date().toISOString(),
-    };
-  } else if (eventType === "pull_request_review") {
+  // Ignore high-volume events we don't use (check_run, workflow_run, etc.)
+  if (eventType === "check_run" || eventType === "check_suite" || eventType === "workflow_run" || eventType === "status") {
+    return new Response("Ignored event type", { status: 200 });
+  }
+
+  if (eventType === "pull_request_review") {
     if (!action || !RELEVANT_REVIEW_ACTIONS.has(action)) {
       return new Response("Ignored action", { status: 200 });
     }

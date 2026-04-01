@@ -211,6 +211,10 @@ class AppState: ObservableObject {
 
     var filteredPullRequests: [PullRequest] {
         var result = pullRequests
+        let hidden = hiddenAuthorList
+        if !hidden.isEmpty {
+            result = result.filter { !hidden.contains($0.author.lowercased()) }
+        }
         if hideClosed {
             result = result.filter { $0.state != "closed" && $0.state != "merged" }
         }
@@ -246,6 +250,15 @@ class AppState: ObservableObject {
 
     var repoList: [String] {
         repos.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    var hiddenAuthors: String {
+        get { UserDefaults.standard.string(forKey: "hidden_authors") ?? "dependabot[bot], mr-claudeseeks[bot]" }
+        set { UserDefaults.standard.set(newValue, forKey: "hidden_authors") }
+    }
+
+    var hiddenAuthorList: Set<String> {
+        Set(hiddenAuthors.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty })
     }
 
     init() {
@@ -322,7 +335,7 @@ class AppState: ObservableObject {
                 pullRequests.insert(newPR, at: 0)
             }
 
-            if isNew && action == "opened" && pr.author != currentUsername {
+            if isNew && action == "opened" && pr.author != currentUsername && !hiddenAuthorList.contains(pr.author.lowercased()) {
                 sendNotification(pr: pr)
             }
         }

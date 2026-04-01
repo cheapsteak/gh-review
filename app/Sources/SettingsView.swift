@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var relayURL: String = ""
     @State private var relayToken: String = ""
     @State private var repos: String = ""
+    @State private var hiddenAuthors: String = ""
     @State private var saved = false
 
     var body: some View {
@@ -31,6 +32,14 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
             }
 
+            Section("Hidden Authors") {
+                TextField("Comma-separated usernames to hide", text: $hiddenAuthors)
+                    .textFieldStyle(.roundedBorder)
+                Text("PRs from these authors won't appear. e.g. dependabot[bot], mr-claudeseeks[bot]")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 HStack {
                     Button("Save") {
@@ -38,6 +47,7 @@ struct SettingsView: View {
                         appState.relayURL = relayURL
                         appState.relayToken = relayToken
                         appState.repos = repos
+                        appState.hiddenAuthors = hiddenAuthors
                         appState.setupAPI()
                         appState.connectWebSocket()
                         saved = true
@@ -62,6 +72,7 @@ struct SettingsView: View {
             relayURL = appState.relayURL
             relayToken = appState.relayToken
             repos = appState.repos
+            hiddenAuthors = appState.hiddenAuthors
         }
     }
 }

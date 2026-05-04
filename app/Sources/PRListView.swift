@@ -44,40 +44,34 @@ struct PRListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                HStack(spacing: 6) {
-                    Menu {
-                        Toggle("Needs review", isOn: $appState.needsReviewOnly)
-                        Toggle("Hide drafts", isOn: $appState.hideDrafts)
-                        Toggle("Hide closed", isOn: $appState.hideClosed)
-                    } label: {
-                        Image(systemName: appState.hasActiveFilters
-                              ? "line.3.horizontal.decrease.circle.fill"
-                              : "line.3.horizontal.decrease.circle")
-                    }
-                    .help("Filter pull requests")
-
-                    Button {
-                        Task { await appState.refreshPRs() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(appState.isLoading)
-                    .help("Refresh pull requests")
-
-                    Button {
-                        appState.myPRsOnly.toggle()
-                    } label: {
-                        Image(systemName: appState.myPRsOnly
-                              ? "person.fill"
-                              : "person")
-                    }
-                    .help("Show only my PRs")
-
-                    Circle()
-                        .fill(appState.webSocketService.isConnected ? Color.green : Color.red)
-                        .frame(width: 7, height: 7)
-                        .help(appState.webSocketService.isConnected ? "Live updates connected" : "Live updates disconnected")
+                Menu {
+                    Toggle("Only my PRs", isOn: $appState.myPRsOnly)
+                    Toggle("Needs review", isOn: $appState.needsReviewOnly)
+                    Toggle("Hide drafts", isOn: $appState.hideDrafts)
+                    Toggle("Hide closed", isOn: $appState.hideClosed)
+                } label: {
+                    Image(systemName: appState.hasActiveFilters
+                          ? "line.3.horizontal.decrease.circle.fill"
+                          : "line.3.horizontal.decrease.circle")
                 }
+                .help("Filter pull requests")
+            }
+
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    Task { await appState.refreshPRs() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .disabled(appState.isLoading)
+                .help("Refresh pull requests")
+            }
+
+            ToolbarItem(placement: .automatic) {
+                Circle()
+                    .fill(appState.webSocketService.isConnected ? Color.green : Color.red)
+                    .frame(width: 7, height: 7)
+                    .help(appState.webSocketService.isConnected ? "Live updates connected" : "Live updates disconnected")
             }
         }
     }
@@ -105,6 +99,12 @@ struct PRRowView: View {
                     .lineLimit(2)
 
                 HStack(spacing: 6) {
+                    Text("#\(pr.number)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+
                     AsyncImage(url: URL(string: pr.avatarURL)) { image in
                         image.resizable()
                             .aspectRatio(contentMode: .fill)

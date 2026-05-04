@@ -91,42 +91,23 @@ struct PRToolbarApproveButton: View {
     let pr: PullRequest
     @EnvironmentObject var appState: AppState
     @State private var isApproving = false
-    @State private var isHovered = false
 
     var body: some View {
         if appState.isApproved(pr) {
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark")
-                    .font(.caption)
-                Text("Approved")
-                    .font(.caption)
-            }
-            .foregroundStyle(.green)
+            Label("Approved", systemImage: "checkmark")
+                .font(.caption)
+                .foregroundStyle(.green)
         } else if isApproving {
             ProgressView()
                 .controlSize(.small)
         } else {
-            HStack(spacing: 4) {
-                Image(systemName: "checkmark")
-                    .font(.caption)
-                Text("Approve")
-                    .font(.caption)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .foregroundStyle(isHovered ? .white : Color.green.opacity(0.8))
-            .background(
-                Capsule().fill(isHovered ? Color.green.opacity(0.7) : Color.clear)
-            )
-            .overlay(
-                Capsule().stroke(Color.green.opacity(isHovered ? 0.7 : 0.3), lineWidth: 1)
-            )
-            .contentShape(Capsule())
-            .onTapGesture {
+            Button {
                 Task { await approve() }
+            } label: {
+                Label("Approve", systemImage: "checkmark")
             }
-            .onHover { isHovered = $0 }
-            .animation(.easeInOut(duration: 0.15), value: isHovered)
+            .buttonStyle(.bordered)
+            .tint(.green)
         }
     }
 
@@ -174,13 +155,21 @@ struct PRToolbarMergeButtons: View {
                 .controlSize(.small)
         } else if let status = status, status.mergeable == true {
             if hasMergeQueue {
-                ActionCapsuleButton(text: "Queue to merge", icon: "text.line.first.and.arrowtriangle.forward", color: .orange) {
+                Button {
                     Task { await enqueue() }
+                } label: {
+                    Label("Queue to merge", systemImage: "text.line.first.and.arrowtriangle.forward")
                 }
+                .buttonStyle(.bordered)
+                .tint(.orange)
             } else {
-                ActionCapsuleButton(text: "Merge", icon: "arrow.triangle.merge", color: .green) {
+                Button {
                     Task { await merge() }
+                } label: {
+                    Label("Merge", systemImage: "arrow.triangle.merge")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
             }
         } else if let status = status, status.mergeable == false {
             statusLabel(status.mergeableState == "dirty" ? "Conflicts" : "Not mergeable", icon: "xmark.circle", color: .secondary)
@@ -190,11 +179,9 @@ struct PRToolbarMergeButtons: View {
     }
 
     private func statusLabel(_ text: String, icon: String, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.caption)
-            Text(text).font(.caption)
-        }
-        .foregroundStyle(color)
+        Label(text, systemImage: icon)
+            .font(.caption)
+            .foregroundStyle(color)
     }
 
     private func merge() async {
@@ -210,30 +197,3 @@ struct PRToolbarMergeButtons: View {
     }
 }
 
-struct ActionCapsuleButton: View {
-    let text: String
-    let icon: String
-    let color: Color
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.caption)
-            Text(text).font(.caption)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .foregroundStyle(isHovered ? .white : color.opacity(0.8))
-        .background(
-            Capsule().fill(isHovered ? color.opacity(0.7) : Color.clear)
-        )
-        .overlay(
-            Capsule().stroke(color.opacity(isHovered ? 0.7 : 0.3), lineWidth: 1)
-        )
-        .contentShape(Capsule())
-        .onTapGesture { action() }
-        .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: 0.15), value: isHovered)
-    }
-}

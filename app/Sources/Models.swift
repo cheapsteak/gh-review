@@ -102,3 +102,9 @@ struct DiffFile: Identifiable {
     let deletions: Int
     let patch: String?     // unified diff, nil for binary
 }
+
+struct AuthorRailEntry: Hashable, Identifiable {
+    let username: String
+    let avatarURL: String
+    var id: String { username }
+}

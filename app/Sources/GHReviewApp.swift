@@ -137,7 +137,9 @@ struct GHReviewApp: App {
 
 @MainActor
 class AppState: ObservableObject {
-    @Published var pullRequests: [PullRequest] = []
+    @Published var pullRequests: [PullRequest] = [] {
+        didSet { recordAvatars(from: pullRequests) }
+    }
     @Published var selectedPR: PullRequest?
     @Published var isLoading = false
     @Published var error: String?
@@ -152,6 +154,11 @@ class AppState: ObservableObject {
     @Published var myPRsOnly = false
     @Published var hideDrafts = true
     @Published var hideClosed = true
+    @Published var selectedAuthor: String? = nil
+
+    /// Most recent avatar URL we've seen for each author. Lets the rail still
+    /// render the selected author's avatar even if their PRs roll off the list.
+    private var lastSeenAvatarURL: [String: String] = [:]
 
     private func prKey(_ pr: PullRequest) -> String { "\(pr.repo)#\(pr.number)" }
 
@@ -205,8 +212,53 @@ class AppState: ObservableObject {
         login.hasSuffix("[bot]") || login.contains("longeye-claude-reviewer")
     }
 
+    private func recordAvatars(from prs: [PullRequest]) {
+        for pr in prs {
+            lastSeenAvatarURL[pr.author] = pr.avatarURL
+        }
+    }
+
+    /// Up to 9 authors. Ordered by their most-recent PR (`updatedAt`,
+    /// falling back to `createdAt`). If `selectedAuthor` is outside the
+    /// top 9, it gets pinned as the 9th entry so the active filter is
+    /// always represented in the rail.
+    var authorsByRecency: [AuthorRailEntry] {
+        // Group PRs by author, keep the latest activity timestamp per author.
+        var latest: [String: Date] = [:]
+        var avatar: [String: String] = [:]
+        for pr in pullRequests {
+            let activity = max(pr.updatedAt, pr.createdAt)
+            if let existing = latest[pr.author] {
+                if activity > existing {
+                    latest[pr.author] = activity
+                    avatar[pr.author] = pr.avatarURL
+                }
+            } else {
+                latest[pr.author] = activity
+                avatar[pr.author] = pr.avatarURL
+            }
+        }
+
+        let sorted = latest.sorted { $0.value > $1.value }.map { $0.key }
+        let top9 = Array(sorted.prefix(9))
+
+        // Default: top 9 as-is.
+        var chosen = top9
+
+        // Pin selection if it's outside the top 9 (or absent entirely).
+        if let selected = selectedAuthor, !chosen.contains(selected) {
+            chosen = Array(top9.prefix(8))
+            chosen.append(selected)
+        }
+
+        return chosen.map { username in
+            let url = avatar[username] ?? lastSeenAvatarURL[username] ?? ""
+            return AuthorRailEntry(username: username, avatarURL: url)
+        }
+    }
+
     var hasActiveFilters: Bool {
-        needsReviewOnly || hideDrafts || hideClosed || myPRsOnly
+        needsReviewOnly || hideDrafts || hideClosed || myPRsOnly || selectedAuthor != nil
     }
 
     var filteredPullRequests: [PullRequest] {
@@ -226,6 +278,9 @@ class AppState: ObservableObject {
         }
         if myPRsOnly {
             result = result.filter { $0.author == currentUsername }
+        }
+        if let selectedAuthor {
+            result = result.filter { $0.author == selectedAuthor }
         }
         return result
     }

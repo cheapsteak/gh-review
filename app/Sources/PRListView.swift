@@ -239,3 +239,95 @@ struct ApproveButton: View {
         .animation(.easeInOut(duration: 0.15), value: isHovered)
     }
 }
+
+// MARK: - Author Rail
+
+private let authorRailWidth: CGFloat = 44
+private let authorRailAvatarSize: CGFloat = 28
+private let authorRailSelectionRingWidth: CGFloat = 2
+
+struct AuthorRailView: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 6) {
+                AllAuthorsButton(
+                    isSelected: appState.selectedAuthor == nil,
+                    action: { appState.selectedAuthor = nil }
+                )
+
+                ForEach(appState.authorsByRecency) { entry in
+                    AuthorAvatarButton(
+                        entry: entry,
+                        isSelected: appState.selectedAuthor == entry.username,
+                        action: { appState.selectedAuthor = entry.username }
+                    )
+                }
+            }
+            .padding(.vertical, 8)
+        }
+        .frame(width: authorRailWidth)
+    }
+}
+
+struct AllAuthorsButton: View {
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "person.3.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                .frame(width: authorRailAvatarSize, height: authorRailAvatarSize)
+                .background(
+                    Circle().fill(isHovered ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.08))
+                )
+                .overlay(
+                    Circle().stroke(
+                        isSelected ? Color.accentColor : Color.clear,
+                        lineWidth: authorRailSelectionRingWidth
+                    )
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("All authors")
+    }
+}
+
+struct AuthorAvatarButton: View {
+    let entry: AuthorRailEntry
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            AsyncImage(url: URL(string: entry.avatarURL)) { image in
+                image.resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Image(systemName: "person.circle.fill")
+                    .resizable()
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: authorRailAvatarSize, height: authorRailAvatarSize)
+            .clipShape(Circle())
+            .background(
+                Circle().fill(isHovered ? Color.secondary.opacity(0.15) : Color.clear)
+            )
+            .overlay(
+                Circle().stroke(
+                    isSelected ? Color.accentColor : Color.clear,
+                    lineWidth: authorRailSelectionRingWidth
+                )
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(entry.username)
+    }
+}

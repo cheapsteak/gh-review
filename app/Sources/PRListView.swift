@@ -291,6 +291,7 @@ struct AllAuthorsButton: View {
                         lineWidth: authorRailSelectionRingWidth
                     )
                 )
+                .clipShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }

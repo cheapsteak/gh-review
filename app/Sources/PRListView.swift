@@ -4,42 +4,48 @@ struct PRListView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        Group {
-            if appState.isLoading && appState.pullRequests.isEmpty {
-                ProgressView("Loading pull requests...")
+        HStack(spacing: 0) {
+            AuthorRailView()
+
+            Divider()
+
+            Group {
+                if appState.isLoading && appState.pullRequests.isEmpty {
+                    ProgressView("Loading pull requests...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if appState.pullRequests.isEmpty {
+                    VStack(spacing: 8) {
+                        Text("No pull requests")
+                            .font(.headline)
+                            .foregroundStyle(.secondary)
+                        Text("Configure repos in Settings")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if appState.pullRequests.isEmpty {
-                VStack(spacing: 8) {
-                    Text("No pull requests")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                    Text("Configure repos in Settings")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(appState.filteredPullRequests, selection: $appState.selectedPR) { pr in
-                    PRRowView(pr: pr)
-                        .tag(pr)
-                }
-                .listStyle(.sidebar)
-                .onChange(of: appState.selectedPR) { _, newPR in
-                    guard let pr = newPR, pr.isNew,
-                          let idx = appState.pullRequests.firstIndex(where: { $0.id == pr.id }) else { return }
-                    appState.pullRequests[idx].isNew = false
-                    appState.selectedPR = appState.pullRequests[idx]
+                } else {
+                    List(appState.filteredPullRequests, selection: $appState.selectedPR) { pr in
+                        PRRowView(pr: pr)
+                            .tag(pr)
+                    }
+                    .listStyle(.sidebar)
+                    .onChange(of: appState.selectedPR) { _, newPR in
+                        guard let pr = newPR, pr.isNew,
+                              let idx = appState.pullRequests.firstIndex(where: { $0.id == pr.id }) else { return }
+                        appState.pullRequests[idx].isNew = false
+                        appState.selectedPR = appState.pullRequests[idx]
+                    }
                 }
             }
-        }
-        .overlay(alignment: .bottom) {
-            if let error = appState.error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(8)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                    .padding(8)
+            .overlay(alignment: .bottom) {
+                if let error = appState.error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .padding(8)
+                }
             }
         }
         .toolbar {

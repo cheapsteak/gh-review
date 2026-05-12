@@ -7,8 +7,6 @@ struct PRListView: View {
         HStack(spacing: 0) {
             AuthorRailView()
 
-            Divider()
-
             Group {
                 if appState.isLoading && appState.pullRequests.isEmpty {
                     ProgressView("Loading pull requests...")

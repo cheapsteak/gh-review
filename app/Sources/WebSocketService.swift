@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+import os
+
+let notificationLog = Logger(subsystem: "com.ghreview", category: "notifications")
 
 class WebSocketService: ObservableObject {
     @Published var isConnected = false
@@ -176,6 +179,8 @@ class WebSocketService: ObservableObject {
             isDraft: false,
             state: "open"
         )
+
+        notificationLog.info("ws pr_event action=\(message.action, privacy: .public) repo=\(pr.repo, privacy: .public) #\(pr.number) author=\(pr.author, privacy: .public)")
 
         DispatchQueue.main.async {
             self.onPREvent?(message.action, pr)

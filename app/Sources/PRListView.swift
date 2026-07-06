@@ -282,20 +282,23 @@ struct AllAuthorsButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            Text("All")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isSelected ? .primary : .secondary)
                 .frame(width: authorRailAvatarSize, height: authorRailAvatarSize)
                 .background(
-                    Circle().fill(isHovered ? Color.secondary.opacity(0.15) : Color.secondary.opacity(0.08))
+                    Circle().fill(
+                        isSelected
+                            ? Color(NSColor.windowBackgroundColor)
+                            : (isHovered ? Color.secondary.opacity(0.25) : Color.secondary.opacity(0.15))
+                    )
                 )
                 .overlay(
-                    Circle().stroke(
+                    Circle().strokeBorder(
                         isSelected ? Color.accentColor : Color.clear,
                         lineWidth: authorRailSelectionRingWidth
                     )
                 )
-                .clipShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
@@ -325,7 +328,7 @@ struct AuthorAvatarButton: View {
                 Circle().fill(isHovered ? Color.secondary.opacity(0.15) : Color.clear)
             )
             .overlay(
-                Circle().stroke(
+                Circle().strokeBorder(
                     isSelected ? Color.accentColor : Color.clear,
                     lineWidth: authorRailSelectionRingWidth
                 )

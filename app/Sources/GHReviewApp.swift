@@ -127,6 +127,13 @@ struct GHReviewApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: false))
         .defaultSize(width: 1100, height: 700)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Test Notification") {
+                    appState.testNotification()
+                }
+            }
+        }
 
         Settings {
             SettingsView()
@@ -392,6 +399,14 @@ class AppState: ObservableObject {
 
             if isNew && action == "opened" && pr.author != currentUsername && !hiddenAuthorList.contains(pr.author.lowercased()) {
                 sendNotification(pr: pr)
+            } else {
+                let reason: String
+                if action != "opened" { reason = "action=\(action)" }
+                else if !isNew { reason = "already-in-list" }
+                else if pr.author == currentUsername { reason = "self-author" }
+                else if hiddenAuthorList.contains(pr.author.lowercased()) { reason = "hidden-author" }
+                else { reason = "unknown" }
+                notificationLog.info("skip notify repo=\(pr.repo, privacy: .public) #\(pr.number) author=\(pr.author, privacy: .public) reason=\(reason, privacy: .public)")
             }
         }
     }
@@ -439,6 +454,7 @@ class AppState: ObservableObject {
     }
 
     private func sendNotification(pr: PullRequest) {
+        notificationLog.notice("fire notify repo=\(pr.repo, privacy: .public) #\(pr.number) author=\(pr.author, privacy: .public)")
         let content = UNMutableNotificationContent()
         content.title = "New PR"
         content.subtitle = pr.title
